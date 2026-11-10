@@ -1,0 +1,43 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            // MinGW + Qt5 配置。工具链 PATH 通过 options.env 前置注入，不依赖
+            // 用户系统 PATH 是否已包含 Qt/MinGW 目录。
+            "label": "cmake configure (MinGW Debug)",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "-G", "MinGW Makefiles",
+                "-DCMAKE_BUILD_TYPE=Debug",
+                "-DQt5_DIR=C:/Qt/Qt5.12.12/5.12.12/mingw73_32/lib/cmake/Qt5",
+                "-DCMAKE_PREFIX_PATH=C:/Qt/Qt5.12.12/5.12.12/mingw73_32",
+                "-S", "${workspaceFolder}",
+                "-B", "${workspaceFolder}/build-mingw"
+            ],
+            "options": {
+                "env": {
+                    "PATH": "C:\\Qt\\Qt5.12.12\\Tools\\mingw730_32\\bin;C:\\Qt\\Qt5.12.12\\5.12.12\\mingw73_32\\bin;${env:PATH}"
+                }
+            },
+            "problemMatcher": [],
+            "presentation": { "reveal": "silent", "clear": true }
+        },
+        {
+            "label": "cmake build (MinGW Debug)",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "--build", "${workspaceFolder}/build-mingw", "-j"
+            ],
+            "options": {
+                "env": {
+                    "PATH": "C:\\Qt\\Qt5.12.12\\Tools\\mingw730_32\\bin;C:\\Qt\\Qt5.12.12\\5.12.12\\mingw73_32\\bin;${env:PATH}"
+                }
+            },
+            "dependsOn": "cmake configure (MinGW Debug)",
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": "$gcc"
+        }
+    ]
+}

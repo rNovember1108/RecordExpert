@@ -1,0 +1,25 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            // MinGW 构建用 gdb 系调试器（cppdbg + MIMode gdb）。MSVC 的 cppvsdbg
+            // 不能调 MinGW 二进制；cppdbg 也不能调 MSVC 二进制，两者不通用。
+            "name": "Debug record_expert (MinGW/Qt GUI)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build-mingw/record_expert.exe",
+            // GUI 模式无命令行参数；启动后直接弹出 QML 主视图。
+            "args": [],
+            "stopAtEntry": false,
+            // Run from the exe's own folder so the FFmpeg DLLs and Qt runtime
+            // DLLs (deployed next to it by post-build steps) are found at load time.
+            "cwd": "${workspaceFolder}/build-mingw",
+            "environment": [],
+            "console": "integratedTerminal",
+            // MinGW 工具链自带的 gdb（Qt 5.12.12 安装目录下）。
+            "MIMode": "gdb",
+            "miDebuggerPath": "C:/Qt/Qt5.12.12/Tools/mingw730_32/bin/gdb.exe",
+            "preLaunchTask": "cmake build (MinGW Debug)"
+        }
+    ]
+}
