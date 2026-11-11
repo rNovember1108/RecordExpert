@@ -6,7 +6,6 @@
 #include "composite_video_source.h"
 #include "dshow_video_source.h"
 #include "gdi_grab_video_source.h"
-#include "Mp4Writer.h"
 
 namespace re {
 namespace {
@@ -23,19 +22,19 @@ std::string Normalize(std::string s) {
 }  // namespace
 
 std::unique_ptr<IVideoSource> VideoSourceFactory::Create(
-    const std::string& backend, const VideoOptions& options, Mp4Writer* writer) {
+    const std::string& backend, const VideoOptions& options) {
     const std::string name = Normalize(backend);
 
     if (name == kGdiGrab) {
-        return std::make_unique<GdiGrabVideoSource>(options, writer);
+        return std::make_unique<GdiGrabVideoSource>(options);
     }
 
     if (name == kDShow) {
-        return std::make_unique<DShowVideoSource>(options, writer);
+        return std::make_unique<DShowVideoSource>(options);
     }
 
     if (name == kComposite) {
-        return std::make_unique<CompositeVideoSource>(options, writer);
+        return std::make_unique<CompositeVideoSource>(options);
     }
 
     return nullptr;

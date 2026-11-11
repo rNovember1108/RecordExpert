@@ -49,6 +49,14 @@ void RecorderViewModel::setSpeedMultiplier(int v) {
     emit speedMultiplierChanged();
 }
 
+void RecorderViewModel::setSegmentMinutes(int v) {
+    // 校验值域：0（不分段）或正整数分钟（≥1）。负数回退 0。
+    if (v < 0) v = 0;
+    if (v == segmentMinutes_) return;
+    segmentMinutes_ = v;
+    emit segmentMinutesChanged();
+}
+
 // ---- BuildOptions ----
 // 把所有 Q_PROPERTY 的 UI 状态一次性组装成 RecorderOptions。
 // 包含输入校验:设备为空时报错返回带错误状态的 opts(调用方可查)。
@@ -62,6 +70,7 @@ void RecorderViewModel::start() {
     RecordingService::UiState s;
     s.output_path = outputPath_;
     s.speed_multiplier = speedMultiplier_;
+    s.segment_minutes = segmentMinutes_;
     s.video_device = video_device_;
     s.secondary_video_device = secondary_video_device_;
     s.audio_device = audio_device_;

@@ -95,6 +95,9 @@ RecordingService::StartResult RecordingService::StartFromUiState(const UiState& 
 
     opts.output_path = s.output_path.toStdString();
     opts.speed_multiplier = s.speed_multiplier;
+    opts.segment_duration_seconds = (s.segment_minutes > 0)
+                                        ? s.segment_minutes * 60.0
+                                        : 0.0;
 
     // 视频后端选择
     opts.video_device = s.video_device.toStdString();

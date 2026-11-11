@@ -5,7 +5,6 @@
 
 #include "dshow_audio_source.h"
 #include "mixed_audio_source.h"
-#include "Mp4Writer.h"
 
 namespace re {
 namespace {
@@ -22,15 +21,15 @@ std::string Normalize(std::string s) {
 }  // namespace
 
 std::unique_ptr<IAudioSource> AudioSourceFactory::Create(
-    const std::string& backend, const AudioOptions& options, Mp4Writer* writer) {
+    const std::string& backend, const AudioOptions& options) {
     const std::string name = Normalize(backend);
 
     if (name == kDShow) {
-        return std::make_unique<DShowAudioSource>(options, writer);
+        return std::make_unique<DShowAudioSource>(options);
     }
 
     if (name == kMixed) {
-        return std::make_unique<MixedAudioSource>(options, writer);
+        return std::make_unique<MixedAudioSource>(options);
     }
 
     return nullptr;

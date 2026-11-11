@@ -217,6 +217,46 @@ Rectangle {
             Item { Layout.fillWidth: true }
         }
 
+        // 分段录制下拉框：不分段 / 2分钟 / 5分钟 / 10分钟 / 30分钟。
+        // 启用后每段写独立 MP4 文件，不停止设备不丢帧，录制开始后禁用。
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            Label {
+                text: "分段"
+                color: "#6c6f85"
+                font.pixelSize: 13
+                Layout.preferredWidth: labelColumnWidth
+                Layout.alignment: Qt.AlignLeft | Qt.AlignVCenter
+                horizontalAlignment: Text.AlignLeft
+            }
+            ComboBox {
+                id: segmentCombo
+                model: ["不分段", "2 分钟", "5 分钟", "10 分钟", "30 分钟"]
+                currentIndex: 0
+                enabled: !controller.isRecording
+                // index → segment_minutes: 0→0, 1→2, 2→5, 3→10, 4→30
+                onActivated: controller.segmentMinutes = [0, 2, 5, 10, 30][index]
+                Connections {
+                    target: controller
+                    onSegmentMinutesChanged: {
+                        var mapping = {0: 0, 2: 1, 5: 2, 10: 3, 30: 4}
+                        var idx = mapping[controller.segmentMinutes]
+                        if (idx !== undefined) segmentCombo.currentIndex = idx
+                    }
+                }
+            }
+            Label {
+                text: controller.segmentMinutes > 0
+                      ? "每段独立 MP4，文件名自动加 _001/_002 后缀"
+                      : "整段录制一个文件"
+                color: "#9ca0b0"
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+            Item { Layout.fillWidth: true }
+        }
+
         // ---- 视频设备选择 ----
         // 桌面录屏硬编码为第一项(gdigrab),页面加载时枚举一次 dshow 摄像头,
         // 末尾追加"桌面+摄像头 (PiP)"混合项。次级摄像头下拉框按需枚举。

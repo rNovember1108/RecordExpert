@@ -6,72 +6,70 @@
 #include <cstdint>
 #include <string>
 
-namespace re {
+// FFmpeg 类型前置声明 —— 放在全局 extern "C" 里，避免 namespace re 里同名类型
+// 遮盖 FFmpeg 头文件里的真实定义（FFmpeg 库用全局 C namespace）。
+extern "C" {
+struct AVCodecContext;
+struct AVFifo;
+struct AVPacket;
+struct AVStream;
+}
 
-class Mp4Writer;
+namespace re {
 
 // 控制视频（桌面）采集的选项。各具体视频源按自身能力取用其中字段。
 struct VideoOptions {
     int fps = 30;                 // 目标采集 / 输出帧率。
     int64_t bit_rate = 4'000'000; // 目标视频码率（比特/秒）。
-    // 采集区域。offset_x/offset_y 是桌面上的左上角坐标；width/height <= 0 表示
-    // "采集整个主屏"。当 window_title 非空时，这些区域坐标在 gdigrab 内部会被
-    // 忽略，但保留字段以兼容其他后端。
     int offset_x = 0;
     int offset_y = 0;
     int width = 0;
     int height = 0;
-    // 倍率录制：1/2/4/8。N>1 时每 N 帧保留 1 帧，输出 PTS 按"墙钟经过时间 / N"
-    // 换算，从而把 N 秒墙钟内容压缩到 1 秒 mp4 输出。
     int speed_multiplier = 1;
-    // 指定窗口录制：窗口标题（UTF-8 字符串）。空串或 "<desktop>" 表示全屏录制。
-    // gdigrab 内部会把 title=<name> 传给 avformat_open_input 替代 "desktop"。
-    // 注意：gdigrab 的 title= 模式按窗口初始矩形固定采集，窗口移动不会跟随——
-    // 这是已知限制，可接受。
     std::string window_title;
-    // dshow 视频设备名（摄像头/采集卡）。仅 dshow 后端使用；gdigrab 忽略。
-    // 取值来自 avdevice_list_input_sources 返回的 device_name。
     std::string device;
-    // 混合录制（composite 后端）时的副源摄像头设备名。composite 后端：device
-    // 固定为 "desktop"（gdigrab 主源），secondary_device 为 dshow 摄像头名。
-    // 其他后端忽略本字段。
     std::string secondary_device;
 };
 
-// IVideoSource 是视频采集源的抽象接口（策略模式中的抽象策略）。具体实现
-// （如 GdiGrabVideoSource）各自封装一种桌面采集方案（gdigrab、dshow 等），
-// 但对协调器 ScreenRecorder 暴露完全一致的生命周期：
+// IVideoSource 在方案 C 里只做"采集 → 解码 → sws → 水印 → send_frame/receive_packet
+// → push 进 AVFifo"。它全程不触碰 muxer，不知道分段的存在。分段切换、PTS 偏移手动
+// 减、WritePacket 全部在 muxer_consumer 侧完成。
 //
-//   Open()                —— 打开采集设备/编码器/输出流（初始化）
-//   Run()                 —— 在 worker 线程上开始采集编码循环
-//   Pause()/Resume()      —— 暂停/继续
-//   Close()               —— 结束并释放全部资源
-//
-// 具体源只负责"采到帧并编码"，编码后的包统一通过共享的 Mp4Writer 写入同一个
-// MP4；水印等公共能力由具体源自行复用公共模块（Watermark.h）。这样新增一种采集
-// 后端只需新增一个本接口的实现类并在 VideoSourceFactory 登记，协调器无需改动。
+// 接口生命周期：
+//   Open 之前 SetQueue → Open 之后 SetStream / SetFlushDoneFlag
+//   → Run（循环）→ Run 末尾 flush encoder → Close
+//   Rotate 时 SetStream 刷新 stream 指针
 class IVideoSource {
 public:
     virtual ~IVideoSource() = default;
 
-    // 打开采集输入、编码器以及输出视频流。必须在 Run() 之前调用。
-    // 失败返回 false。
+    // Open 之前注入输出队列（producer receive_packet 后 push 这里）。
+    virtual void SetQueue(AVFifo* queue) = 0;
+
+    // Open 之后注入流指针（Rotate 后也刷新）。
+    virtual void SetStream(AVStream* stream) = 0;
+
+    // Open 之后注入 flush_done 标志（muxer_worker 设 flush_requested，producer flush
+    // 完后 store(true)，通知 muxer 可以 drain queue + Rotate）。
+    virtual void SetFlushDoneFlag(std::atomic<bool>* flag) = 0;
+
     virtual bool Open() = 0;
 
-    // 采集并编码帧，直到 `duration_seconds` 耗尽（若 > 0）或 `stop` 变为 true。
-    // 以 `start` 作为打真实时间 PTS 的共享零点（与音频源同一时刻）。发生致命
-    // 错误返回 false。运行在调用方线程上（协调器在专用 worker 线程调用）。
+    // Run 循环：采集 → 解码 → sws → 水印/BlitPiP → send_frame + receive_packet
+    // → push queue。duration_seconds=0 表示无限循环（segment 边界由 muxer flush_requested 驱动）。
     virtual bool Run(double duration_seconds,
                      std::chrono::steady_clock::time_point start,
-                     const std::atomic<bool>& stop) = 0;
+                     const std::atomic<bool>& stop,
+                     const std::atomic<bool>& flush_requested) = 0;
 
-    // flush 编码器并释放所有视频资源。幂等。
     virtual void Close() = 0;
 
-    // 暂停/继续采集。暂停期间不抓帧、不写包；继续后按"真实经过时间 - 暂停总时长"
-    // 修正 PTS，使视频时间轴贴合墙钟。
     virtual void Pause() = 0;
     virtual void Resume() = 0;
+
+    // ScreenRecorder 在 OpenMuxer/RotateMuxer 时需要 encoder 上下文（MP4Writer
+    // 内部创建 stream 时用 enc_ctx_->codecpar 拷贝）。
+    virtual AVCodecContext* EncCtx() const = 0;
 };
 
 }  // namespace re

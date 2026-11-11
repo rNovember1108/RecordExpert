@@ -6,10 +6,16 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
+
+#include <libavutil/fifo.h>   // AVFifo（单生产者-单消费者 lock-free）
 
 #include "capture/i_audio_source.h"
 #include "capture/i_video_source.h"
 #include "Mp4Writer.h"
+
+struct AVPacket;  // 前置声明
+struct AVStream;
 
 namespace re {
 
@@ -66,26 +72,37 @@ struct RecorderOptions {
     // （快进 N 倍）。视频每 N 帧保留 1 帧，音频每 N 个样本保留 1 个（变调接受）。
     // 由 UI 倍率下拉框设置，校验值域 1/2/4/8，越界回退 1。
     int speed_multiplier = 1;
+
+    // ---- 分段录制 ----
+    // > 0 时，录制会话自动按 segment_duration_seconds 秒切分成多个 MP4 文件
+    // （"output_001.mp4"、"output_002.mp4" …），中间不停止采集设备、不丢帧。
+    // <= 0 时不分段，整段录制写一个 output_path 文件。
+    double segment_duration_seconds = 0.0;
 };
 
-// ScreenRecorder 协调一个视频源（IVideoSource）和一个可选的音频源
-// （IAudioSource），两者共享同一个 MP4 输出（Mp4Writer）。具体源由
-// VideoSourceFactory / AudioSourceFactory 按 RecorderOptions 中的运行时后端名
-// 创建；本类自身不持有任何采集/编码逻辑，只负责：
-//   * 把 RecorderOptions 拆分为各轨的选项，
-//   * 打开共享 muxer 与两条轨，然后写文件头，
-//   * 从一个共同的墙钟零点出发，在各自的后台线程上运行每条轨（使两条媒体时间轴
-//     保持对齐），
-//   * 生命周期：Start / Stop 以及把文件收尾。
+// ScreenRecorder 采用"双生产者 + 单消费者"三线程架构：
 //
-// 典型用法：
+//   video_producer_worker  ──┐  send_frame + receive_packet
+//                             │  → push AVFifo queue_v
+//   audio_producer_worker  ──┤
+//                             │  send_frame + receive_packet
+//                             │  → push AVFifo queue_a
+//                             ▼
+//                     ┌────────────────────┐
+//                     │  muxer_worker      │  唯一持有 AVFormatContext*
+//                     │  queue_v / queue_a │  唯一调 av_interleaved_write_frame
+//                     │  pts_offset 手动减  │  唯一做 segment 边界检测 + Rotate
+//                     └────────────────────┘
+//                             ▼
+//                        MP4 文件
 //
-//     ScreenRecorder rec(opts);
-//     if (!rec.Start(seconds)) { ... }   // 立即返回
-//     ...                                // 调用方继续做其他事情
-//     rec.Stop();                        // 提前停止并把文件收尾
-//
-// 所有公开方法都可从录制线程以外的线程安全调用。
+// 关键设计：
+//   * encoder 全程一个（segment 边界不重建），由 pts_offset 手动减实现新 segment
+//     从 PTS=0 起算；硬件编码器（NVENC/QSV/AMF）零 rebuild 开销
+//   * AVFifo 单生产者-单消费者 lock-free，FFmpeg 内部用 C11 原子 head/tail 交换
+//   * AVPacket 跨 FIFO 安全：AVBufferRef 原子引用计数，producer/unref 时只减自己那份
+//   * segment 边界由 muxer_worker wall clock 检测，通知 producer flush encoder →
+//     drain queue → Rotate → 更新 pts_offset → 继续下一段（encoder 不动）
 class ScreenRecorder {
 public:
     explicit ScreenRecorder(RecorderOptions options);
@@ -113,32 +130,74 @@ public:
     bool Resume();
 
 private:
-    // 打开共享 muxer 与两条轨，然后写文件头。失败返回 false。
+    // 打开各轨输入设备 + 编码器，OpenMuxer 写首个文件头。失败返回 false。
     bool Open();
 
     // Join 各 worker 线程（若在运行），把文件收尾并释放所有资源。幂等。
     void Close();
 
+    // 把原始 path 按 segment_index 生成 _NNN 后缀的分段路径。
+    static std::string BuildSegmentPath(const std::string& original, int segment_index);
+
     RecorderOptions opts_;
     std::atomic<bool> stop_requested_{false};
 
-    // 共享的输出文件，以及向它写入的两个采集源（实际类型由工厂按后端名创建）。
-    Mp4Writer                        writer_;
-    std::unique_ptr<IVideoSource>     video_;
-    std::unique_ptr<IAudioSource>     audio_;
+    // ---- 各轨采集与编码（producer 侧） ----
+    // 两条轨的 Run 循环：采集 → 解码 → sws/swr → 水印/混音 → send_frame + receive_packet
+    // → push 进 AVFifo。encoder 全程一个，segment 边界不重建。
+    std::unique_ptr<IVideoSource> video_;
+    std::unique_ptr<IAudioSource> audio_;
 
-    // 后台录制线程与生命周期状态。
-    std::thread       video_worker_;
-    std::thread       audio_worker_;
-    std::atomic<bool> recording_{false};   // 只要有 worker 循环在运行即为 true。
-    std::atomic<int>  active_workers_{0};  // 正在运行的 worker 循环数量。
+    // ---- 唯一的 muxer（consumer 侧） ----
+    // Mp4Writer 被 muxer_worker_ 单线程调用；producer 不触碰它。
+    Mp4Writer writer_;
+
+    // ---- lock-free 队列（AVFifo） ----
+    // 单生产者(video_producer) + 单消费者(muxer_consumer)
+    // 单生产者(audio_producer) + 单消费者(muxer_consumer)
+    AVFifo* queue_v_ = nullptr;
+    AVFifo* queue_a_ = nullptr;  // capture_audio=false 时保持 nullptr
+
+    // ---- flush 同步 ----
+    // muxer_worker 检测到 segment 边界时，设 flush_requested，producer 看到后
+    // 把 encoder 内部残留帧 flush 出来 push queue，然后设 flush_done 通知 muxer
+    // 可以 drain + Rotate。新段 pts_offset 由 muxer 依据"已写入的最大原始 pts"
+    // 权威计算（DrainFifoAndWrite 返回值），不依赖 encoder flush 是否产出残包。
+    std::atomic<bool> flush_requested_v_{false};
+    std::atomic<bool> flush_done_v_{false};
+    std::atomic<bool> flush_requested_a_{false};
+    std::atomic<bool> flush_done_a_{false};
+
+    // producer 退出标志：Run 返回后由 worker lambda 置 true（此时尾包已全部
+    // push 进 queue）。muxer_worker 用它判断"可以安全做最终 drain + trailer"，
+    // 避免Stop 时 muxer 抢先收尾把 producer 还没 flush 出来的尾包丢掉。
+    std::atomic<bool> producers_done_v_{false};
+    std::atomic<bool> producers_done_a_{false};
+
+    // ---- segment 边界状态 ----
+    int   segment_index_ = 0;   // 递增序号，仅用于分段文件命名（_001/_002…）
+    int64_t pts_offset_v_ = 0;   // 每次 Rotate 后更新为"本轨已写入最大原始 pts + 1"
+    int64_t pts_offset_a_ = 0;   // 同上，音频轨
+    // 所有 producer 的墙钟 PTS 零点：Start 时置为 now，全录制期间不变。
+    // 注意：分段边界不再重置它——新段从 0 起算由 pts_offset_ 手动减法实现；
+    // 分段边界计时由 muxer_worker 内部的 seg_active（暂停冻结）负责。
+    std::chrono::steady_clock::time_point capture_start_{};
+
+    // muxer_worker 持有的当前 segment 的 stream 指针（Rotate 后刷新）。
+    // producer 的 stream_ 也会通过 SetStream 同步更新（rescale 需要）。
+    AVStream* current_stream_v_ = nullptr;
+    AVStream* current_stream_a_ = nullptr;
+
+    // ---- worker 线程 ----
+    std::thread video_worker_;   // producer: 采集+编码+push queue_v_
+    std::thread audio_worker_;   // producer: 采集+编码+push queue_a_（可选）
+    std::thread muxer_worker_;   // consumer: pop queue → pts 减 offset → write_frame + Rotate
+
+    // 生命周期状态
+    std::atomic<bool> recording_{false};
     std::atomic<bool> video_ok_{true};
     std::atomic<bool> audio_ok_{true};
-    std::atomic<bool> paused_{false};  // 暂停标志，转发给两条轨。
-
-    // 两条轨共享的共同墙钟零点。在 worker 线程启动前恰好捕获，使视频与音频的
-    // 墙钟 PTS 从同一时刻起算。
-    std::chrono::steady_clock::time_point capture_start_{};
+    std::atomic<bool> paused_{false};
 };
 
 }  // namespace re

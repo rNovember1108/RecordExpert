@@ -37,6 +37,7 @@ public:
     struct UiState {
         QString output_path;               // Q_PROPERTY
         int speed_multiplier = 1;          // Q_PROPERTY
+        int segment_minutes = 0;           // Q_PROPERTY, 0=不分段, >0 按分钟切文件
         QString video_device;              // Q_PROPERTY ("desktop"/设备名/"composite")
         QString secondary_video_device;    // Q_PROPERTY
         QString audio_device;              // Q_PROPERTY ("mixed"/设备名)

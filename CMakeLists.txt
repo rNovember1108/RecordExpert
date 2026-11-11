@@ -8,8 +8,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ---------------------------------------------------------------------------
 # Qt + MinGW 工具链配置
 # 项目从 MSVC 切换到 MinGW 32-bit，以复用本机已安装的 Qt5.12.12 mingw73_32 套件
-# （msvc2017_32 套件未安装）。FFmpeg 32-bit 库是 MSVC 格式 .lib + .def + .dll，
-# MinGW ld 通过 -l:<name>.dll 直接链接 DLL 导出表，无需 .a 导入库。
+# （msvc2017_32 套件未安装）。
+# FFmpeg 32-bit 库是 MSVC 格式 .lib + .def + .dll，MinGW ld 直接链接 DLL
+# 导出表不稳定，所以用 dlltool 从 .def 生成 .dll.a 导入库（已生成在 bin/ 目录）。
 # ---------------------------------------------------------------------------
 set(QT_PREFIX "C:/Qt/Qt5.12.12/5.12.12/mingw73_32")
 list(APPEND CMAKE_PREFIX_PATH ${QT_PREFIX})
@@ -76,7 +77,7 @@ target_include_directories(record_expert PRIVATE
     "${CMAKE_SOURCE_DIR}/src/model/capture"
 )
 
-# MinGW ld 通过 -l:<name>.dll 直接链接 DLL，所以指向 bin 目录。
+# MinGW ld 链接 .dll.a 导入库（由 dlltool 从 .def 生成，放在 bin/ 目录）。
 target_link_directories(record_expert PRIVATE "${FFMPEG_BIN_DIR}")
 
 # LARGEADDRESSAWARE:把 32 位进程可用地址空间从 2GB 扩到 4GB。本应用是
@@ -87,15 +88,14 @@ target_link_directories(record_expert PRIVATE "${FFMPEG_BIN_DIR}")
 target_link_options(record_expert PRIVATE -Wl,--large-address-aware)
 
 target_link_libraries(record_expert PRIVATE
-    # FFmpeg：用 -l:<name>.dll 让 MinGW ld 直接吃 DLL 导出表，
-    # 绕过 MSVC 格式 .lib 导入库（MinGW ld 不一定能稳定读取 .lib COFF 索引）。
-    -l:avformat-60.dll
-    -l:avcodec-60.dll
-    -l:avdevice-60.dll
-    -l:avfilter-9.dll
-    -l:avutil-58.dll
-    -l:swscale-7.dll
-    -l:swresample-4.dll
+    # FFmpeg：用 dlltool 从 .def 生成的 .dll.a 导入库。
+    -lavformat-60.dll
+    -lavcodec-60.dll
+    -lavdevice-60.dll
+    -lavfilter-9.dll
+    -lavutil-58.dll
+    -lswscale-7.dll
+    -lswresample-4.dll
     Qt5::Multimedia  # QAudioOutput:VideoPlayerItem 音频输出(替代 Win32 WaveOut)
     Qt5::Core
     Qt5::Gui

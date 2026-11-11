@@ -52,6 +52,8 @@ class RecorderViewModel : public QObject {
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     // 倍率录制档位(1/2/4/8)。N>1 时把 N 秒墙钟内容压缩为 1 秒 mp4 输出。
     Q_PROPERTY(int speedMultiplier READ speedMultiplier WRITE setSpeedMultiplier NOTIFY speedMultiplierChanged)
+    // 分段录制档位(0=不分段, >0 按分钟切文件)。录制开始后禁用。
+    Q_PROPERTY(int segmentMinutes READ segmentMinutes WRITE setSegmentMinutes NOTIFY segmentMinutesChanged)
     // 计时器文本 "HH:MM:SS",显示有效录制时长(扣除暂停区间)。
     Q_PROPERTY(QString elapsedText READ elapsedText NOTIFY elapsedTextChanged)
     // 录制范围模式:0=全屏, 1=区域, 2=指定窗口。
@@ -78,6 +80,7 @@ public:
     QString outputPath() const { return outputPath_; }
     QString status() const { return status_; }
     int speedMultiplier() const { return speedMultiplier_; }
+    int segmentMinutes() const { return segmentMinutes_; }
     QString elapsedText() const;
     int recordMode() const { return record_mode_; }
     QString windowTitle() const { return window_title_; }
@@ -89,6 +92,7 @@ public:
 
     void setOutputPath(const QString& path);
     void setSpeedMultiplier(int v);
+    void setSegmentMinutes(int v);
     void setRecordMode(int v);
     void setWindowTitle(QString t);
     Q_INVOKABLE void setVideoDevice(QString t);
@@ -149,6 +153,7 @@ signals:
     void outputPathChanged();
     void statusChanged();
     void speedMultiplierChanged();
+    void segmentMinutesChanged();
     void elapsedTextChanged();
     void videoDeviceChanged();
     void secondaryVideoDeviceChanged();
@@ -182,6 +187,7 @@ private:
     QString outputPath_ = QStringLiteral("output.mp4");
     QString status_ = QStringLiteral("Idle");
     int speedMultiplier_ = 1;
+    int segmentMinutes_ = 0;  // 0=不分段, >0 按分钟切文件。
     int record_mode_ = 0;  // 0=全屏, 1=区域, 2=指定窗口。
     QString window_title_;
     QString video_device_ = QStringLiteral("desktop");
